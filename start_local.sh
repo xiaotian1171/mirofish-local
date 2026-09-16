@@ -3,8 +3,11 @@
 set -u
 
 cd /workspaces/mirofish
-pkill -f "backend/run.py" >/dev/null 2>&1 || true
-pkill -f "vite" >/dev/null 2>&1 || true
+# 按端口收尸（pkill -f "backend/run.py" 与实际 cmdline ".venv/bin/python run.py" 不匹配，会静默失败）
+for port in 5001 3000; do
+  pid=$(lsof -ti:$port 2>/dev/null || true)
+  if [ -n "$pid" ]; then kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null; fi
+done
 sleep 1
 
 cd /workspaces/mirofish/backend
