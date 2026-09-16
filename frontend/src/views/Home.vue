@@ -295,18 +295,17 @@ const scrollToBottom = () => {
 }
 
 // 开始模拟 - 立即跳转，API调用在Process页面进行
-const startSimulation = () => {
+const startSimulation = async () => {
   if (!canSubmit.value || loading.value) return
-  
-  // 存储待上传的数据
-  import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
-    setPendingUpload(files.value, formData.value.simulationRequirement)
-    
-    // 立即跳转到Process页面（使用特殊标识表示新建项目）
-    router.push({
-      name: 'Process',
-      params: { projectId: 'new' }
-    })
+
+  // 存储待上传的数据（同时落 IndexedDB，刷新后仍可继续）
+  const { setPendingUpload } = await import('../store/pendingUpload.js')
+  await setPendingUpload(files.value, formData.value.simulationRequirement)
+
+  // 立即跳转到Process页面（使用特殊标识表示新建项目）
+  router.push({
+    name: 'Process',
+    params: { projectId: 'new' }
   })
 }
 </script>

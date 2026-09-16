@@ -194,8 +194,9 @@ const initProject = async () => {
 const handleNewProject = async () => {
   const pending = getPendingUpload()
   if (!pending.isPending || pending.files.length === 0) {
-    error.value = 'No pending files found.'
-    addLog('Error: No pending files found for new project.')
+    // 没有待上传内容（例如直接打开该地址）→ 回首页重新选择文档
+    addLog('No pending files found for new project. Redirecting to home.')
+    router.replace({ name: 'Home' })
     return
   }
   
