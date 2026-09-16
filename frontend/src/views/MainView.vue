@@ -83,7 +83,7 @@ import { useI18n } from 'vue-i18n'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
-import { generateOntologyAsync, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { generateOntologyAsync, regenerateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 
@@ -241,7 +241,6 @@ const handleNewProject = async () => {
     // 本体生成耗时较长，后端异步执行 + 轮询任务，避免长请求被网关截断
     const res = await generateOntologyAsync(formData)
     if (res.success) {
-      clearPendingUpload()
       currentProjectId.value = res.data.project_id
       router.replace({ name: 'Process', params: { projectId: res.data.project_id } })
 
@@ -250,6 +249,8 @@ const handleNewProject = async () => {
       ontologyProgress.value = null
       addLog(`Ontology generated successfully for project ${data.project_id}`)
       await startBuildGraph()
+      // 整条链路跑通后才丢弃本地待上传文件，失败时保留以便重试
+      if (!error.value) clearPendingUpload()
     } else {
       error.value = res.error || 'Ontology generation failed'
       addLog(`Error generating ontology: ${error.value}`)
@@ -259,6 +260,32 @@ const handleNewProject = async () => {
     addLog(`Exception in handleNewProject: ${err.message}`)
   } finally {
     loading.value = false
+  }
+}
+
+// 本体生成失败/中断后，用服务端已存的文档文本重跑一次
+const retryOntology = async () => {
+  try {
+    currentPhase.value = 0
+    ontologyProgress.value = { message: 'Retrying ontology generation...' }
+    addLog('Previous attempt failed. Retrying with documents stored on server...')
+    const res = await regenerateOntology(currentProjectId.value)
+    if (!res.success) {
+      error.value = res.error || 'Retry failed'
+      ontologyProgress.value = null
+      addLog(`Retry not possible: ${error.value}`)
+      return
+    }
+    const data = await waitForOntologyTask(res.data.task_id)
+    projectData.value = data
+    ontologyProgress.value = null
+    error.value = ''
+    addLog('Ontology regenerated successfully.')
+    await startBuildGraph()
+  } catch (err) {
+    ontologyProgress.value = null
+    error.value = err.message
+    addLog(`Exception in retryOntology: ${err.message}`)
   }
 }
 
@@ -272,7 +299,12 @@ const loadProject = async () => {
       updatePhaseByStatus(res.data.status)
       addLog(`Project loaded. Status: ${res.data.status}`)
       
-      if (res.data.status === 'ontology_generated' && !res.data.graph_id) {
+      if ((res.data.status === 'created' || res.data.status === 'failed') && (res.data.files || []).length > 0) {
+        await retryOntology()
+      } else if (res.data.status === 'created' || res.data.status === 'failed') {
+        error.value = 'No reusable document found for this project. Please upload the files again from the home page.'
+        addLog(error.value)
+      } else if (res.data.status === 'ontology_generated' && !res.data.graph_id) {
         await startBuildGraph()
       } else if (res.data.status === 'graph_building' && res.data.graph_build_task_id) {
         currentPhase.value = 1

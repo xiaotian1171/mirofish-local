@@ -1023,6 +1023,8 @@ def generate_ontology_async():
         project.total_text_length = len(all_text)
         ProjectManager.save_extracted_text(project.project_id, all_text)
         logger.info(f"文本提取完成，共 {len(all_text)} 字符")
+        # 先把文件清单与模拟需求落盘：否则本次失败后项目信息为空，无法重试
+        ProjectManager.save_project(project)
 
         task_manager = TaskManager()
         task_id = task_manager.create_task(
@@ -1102,4 +1104,119 @@ def generate_ontology_async():
         return jsonify({
             "success": False,
             "error": f"启动异步本体生成失败: {error}"
+        }), 500
+
+
+def _start_ontology_task(project, document_texts, simulation_requirement, additional_context=None):
+    """后台线程执行本体生成，返回 task_id（上传接口与重试接口共用）。"""
+    task_manager = TaskManager()
+    task_id = task_manager.create_task(
+        f"生成本体定义: {project.name}",
+        metadata={"project_id": project.project_id}
+    )
+    current_locale = get_locale()
+
+    def ontology_task():
+        set_locale(current_locale)
+        try:
+            task_manager.update_task(
+                task_id,
+                status=TaskStatus.PROCESSING,
+                progress=10,
+                message="正在调用大模型生成本体定义..."
+            )
+            ontology = OntologyGenerator().generate(
+                document_texts=document_texts,
+                simulation_requirement=simulation_requirement,
+                additional_context=additional_context if additional_context else None
+            )
+            project.ontology = {
+                "entity_types": ontology.get("entity_types", []),
+                "edge_types": ontology.get("edge_types", [])
+            }
+            project.analysis_summary = ontology.get("analysis_summary", "")
+            project.status = ProjectStatus.ONTOLOGY_GENERATED
+            ProjectManager.save_project(project)
+            logger.info(
+                f"[{task_id}] 本体生成完成: "
+                f"{len(project.ontology['entity_types'])} 个实体类型, "
+                f"{len(project.ontology['edge_types'])} 个关系类型"
+            )
+            task_manager.update_task(
+                task_id,
+                status=TaskStatus.COMPLETED,
+                progress=100,
+                message="本体生成完成",
+                result={
+                    "project_id": project.project_id,
+                    "project_name": project.name,
+                    "ontology": project.ontology,
+                    "analysis_summary": project.analysis_summary,
+                    "files": project.files,
+                    "total_text_length": project.total_text_length
+                }
+            )
+        except Exception as error:
+            provider_status = getattr(error, "status_code", None)
+            message = f"本体生成失败: {error}"
+            if isinstance(provider_status, int):
+                message = f"本体生成失败: LLM provider HTTP {provider_status}"
+            logger.exception(f"[{task_id}] {message}")
+            task_manager.update_task(
+                task_id,
+                status=TaskStatus.FAILED,
+                message=message,
+                error=message
+            )
+
+    threading.Thread(target=ontology_task, daemon=True).start()
+    return task_id
+
+
+@graph_bp.route('/ontology/regenerate', methods=['POST'])
+def regenerate_ontology():
+    """对已有项目重跑本体生成：复用服务端已保存的抽取文本，无需重新上传文件。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        project_id = data.get('project_id')
+        if not project_id:
+            return jsonify({"success": False, "error": "缺少 project_id"}), 400
+
+        project = ProjectManager.get_project(project_id)
+        if not project:
+            return jsonify({"success": False, "error": f"项目不存在: {project_id}"}), 404
+
+        all_text = ProjectManager.get_extracted_text(project_id)
+        if not all_text:
+            return jsonify({
+                "success": False,
+                "error": "本项目没有可复用的文档文本，请重新上传文档"
+            }), 400
+
+        simulation_requirement = project.simulation_requirement or data.get('simulation_requirement') or ''
+        if not simulation_requirement:
+            return jsonify({
+                "success": False,
+                "error": "本项目缺少模拟需求，请重新上传文档"
+            }), 400
+
+        parts = [p.strip() for p in re.split(r'\n\n=== .*? ===\n', all_text)]
+        document_texts = [p for p in parts if p] or [all_text]
+        logger.info(f"重跑本体生成(复用已存文本): {project_id}, {len(document_texts)} 段")
+
+        task_id = _start_ontology_task(
+            project,
+            document_texts,
+            simulation_requirement,
+            data.get('additional_context')
+        )
+        return jsonify({
+            "success": True,
+            "data": {"project_id": project_id, "task_id": task_id}
+        })
+    except Exception as error:
+        logger.exception("重跑本体生成启动失败")
+        return jsonify({
+            "success": False,
+            "error": f"重跑本体生成启动失败: {error}"
         }), 500

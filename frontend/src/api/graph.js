@@ -80,3 +80,16 @@ export function getProject(projectId) {
     method: 'get'
   })
 }
+
+/**
+ * 对已有项目重跑本体生成（复用服务端已保存的文档文本）
+ * @param {String} projectId - 项目ID
+ * @returns {Promise}
+ */
+export function regenerateOntology(projectId) {
+  return service({
+    url: '/api/graph/ontology/regenerate',
+    method: 'post',
+    data: { project_id: projectId }
+  })
+}
