@@ -12,8 +12,14 @@ export default defineConfig({
     }
   },
   server: {
+    host: true,
     port: 3000,
-    open: true,
+    open: false,
+    allowedHosts: ['.app.github.dev', 'localhost', '127.0.0.1'],
+    hmr: {
+      protocol: 'wss',
+      clientPort: 443
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:5001',

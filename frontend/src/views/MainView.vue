@@ -83,7 +83,7 @@ import { useI18n } from 'vue-i18n'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
-import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { generateOntologyAsync, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 
@@ -191,6 +191,34 @@ const initProject = async () => {
   }
 }
 
+// 轮询本体生成任务，完成后返回任务结果
+const waitForOntologyTask = async (taskId) => {
+  // 最多等待 30 分钟，避免渠道长时间无响应时界面一直转圈
+  const maxPolls = 900
+  for (let poll = 0; poll < maxPolls; poll++) {
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    let res
+    try {
+      res = await getTaskStatus(taskId)
+    } catch (e) {
+      console.warn('Ontology task poll error:', e)
+      continue
+    }
+    if (!res.success) continue
+    const task = res.data
+    if (task.message) {
+      ontologyProgress.value = { message: task.message }
+    }
+    if (task.status === 'completed') {
+      return task.result || {}
+    }
+    if (task.status === 'failed') {
+      throw new Error(task.error || 'Ontology generation failed')
+    }
+  }
+  throw new Error('Ontology generation timed out')
+}
+
 const handleNewProject = async () => {
   const pending = getPendingUpload()
   if (!pending.isPending || pending.files.length === 0) {
@@ -210,15 +238,17 @@ const handleNewProject = async () => {
     pending.files.forEach(f => formData.append('files', f))
     formData.append('simulation_requirement', pending.simulationRequirement)
     
-    const res = await generateOntology(formData)
+    // 本体生成耗时较长，后端异步执行 + 轮询任务，避免长请求被网关截断
+    const res = await generateOntologyAsync(formData)
     if (res.success) {
       clearPendingUpload()
       currentProjectId.value = res.data.project_id
-      projectData.value = res.data
-      
       router.replace({ name: 'Process', params: { projectId: res.data.project_id } })
+
+      const data = await waitForOntologyTask(res.data.task_id)
+      projectData.value = data
       ontologyProgress.value = null
-      addLog(`Ontology generated successfully for project ${res.data.project_id}`)
+      addLog(`Ontology generated successfully for project ${data.project_id}`)
       await startBuildGraph()
     } else {
       error.value = res.error || 'Ontology generation failed'

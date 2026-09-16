@@ -6,6 +6,7 @@ LLM客户端封装
 import json
 import logging
 import re
+import time
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
@@ -14,6 +15,50 @@ from .openai_chat_compat import create_chat_completion, extract_chat_completion_
 
 
 logger = logging.getLogger(__name__)
+
+_thinking_control_supported = True
+
+
+def _thinking_control_body() -> Optional[Dict[str, Any]]:
+    """Request body that turns off hidden reasoning chains on reasoning models."""
+
+    if not Config.LLM_DISABLE_THINKING or not _thinking_control_supported:
+        return None
+    return {"thinking": {"type": "disabled"}}
+
+
+def _disable_thinking_control() -> None:
+    global _thinking_control_supported
+    _thinking_control_supported = False
+
+
+def _is_thinking_control_unsupported(error: Exception) -> bool:
+    """Detect an explicit provider rejection of the thinking control parameter."""
+
+    if getattr(error, "status_code", None) not in {400, 404, 422}:
+        return False
+    message = str(error).lower()
+    return any(token in message for token in ("thinking", "extra_body", "unknown", "unsupported"))
+
+
+# 上游/网关的瞬时故障：重试通常就能恢复（免费渠道尤其常见）
+_TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 554}
+_TRANSIENT_MAX_RETRIES = 3
+
+
+def _is_transient_provider_error(error: Exception) -> bool:
+    """Detect a provider-side transient failure that is worth retrying."""
+
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and status in _TRANSIENT_STATUS:
+        return True
+    return type(error).__name__ in {
+        "APITimeoutError",
+        "APIConnectionError",
+        "ReadTimeout",
+        "ConnectTimeout",
+    }
+
 
 
 class LLMResponseError(ValueError):
@@ -119,14 +164,30 @@ class LLMClient:
     ) -> Any:
         """Send one raw Chat Completions request through the compatibility layer."""
 
-        return create_chat_completion(
-            self.client,
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=response_format,
-        )
+        extra_body = _thinking_control_body()
+        try:
+            return create_chat_completion(
+                self.client,
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+                extra_body=extra_body,
+            )
+        except Exception as error:
+            if extra_body is None or not _is_thinking_control_unsupported(error):
+                raise
+            _disable_thinking_control()
+            logger.warning("Provider rejected thinking control; retrying without it")
+            return create_chat_completion(
+                self.client,
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
     
     def chat(
         self,
@@ -186,6 +247,7 @@ class LLMClient:
             # JSON-mode capability negotiation is separate from content
             # regeneration. An explicit response_format rejection may add one
             # request, but it must not consume a content attempt.
+            transient_attempt = 0
             while True:
                 try:
                     response = self._create_completion(
@@ -204,6 +266,19 @@ class LLMClient:
                             "retrying once with prompt-only JSON guidance"
                         )
                         response_format = None
+                        continue
+                    if (
+                        _is_transient_provider_error(error)
+                        and transient_attempt < _TRANSIENT_MAX_RETRIES
+                    ):
+                        transient_attempt += 1
+                        logger.warning(
+                            "LLM provider transient failure (status=%s); retry %d/%d",
+                            getattr(error, "status_code", type(error).__name__),
+                            transient_attempt,
+                            _TRANSIENT_MAX_RETRIES,
+                        )
+                        time.sleep(min(2 ** transient_attempt, 8))
                         continue
                     raise
                 break

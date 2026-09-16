@@ -17,6 +17,22 @@ export function generateOntology(formData) {
 }
 
 /**
+ * 异步生成本体（长耗时，返回 task_id 供轮询）
+ * @param {Object} formData - 包含 files 和 simulation_requirement
+ * @returns {Promise}
+ */
+export function generateOntologyAsync(formData) {
+  return service({
+    url: '/api/graph/ontology/generate_async',
+    method: 'post',
+    data: formData,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
+/**
  * 构建图谱
  * @param {Object} data - 包含project_id, graph_name等
  * @returns {Promise}

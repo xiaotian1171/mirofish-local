@@ -28,6 +28,9 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    # 兼容层开关：部分渠道的推理型模型默认输出思维链，会显著拖慢结构化 JSON 输出，
+    # 甚至触发上游超时；默认请求关闭思考，渠道不支持时自动退回原样请求。
+    LLM_DISABLE_THINKING = os.environ.get('LLM_DISABLE_THINKING', 'true').strip().lower() in ('1', 'true', 'yes', 'on')
     
     # Zep配置（ZEP_BACKEND=local 使用内置本地图谱后端，不连接 Zep Cloud）
     ZEP_BACKEND = os.environ.get('ZEP_BACKEND', 'cloud').strip().lower()

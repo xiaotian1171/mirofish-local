@@ -961,3 +961,145 @@ def delete_graph(graph_id: str):
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+# ============== 接口1-异步：上传文件并生成本体（前端轮询任务） ==============
+
+@graph_bp.route('/ontology/generate_async', methods=['POST'])
+def generate_ontology_async():
+    """异步版本体生成：立即返回 task_id，前端轮询 /graph/task/<task_id> 取结果。
+
+    与同步接口参数一致；仅把耗时的大模型调用放入后台线程，
+    避免反向代理对长请求的超时（大模型生成结构化本体可能需要数分钟）。
+    """
+    try:
+        simulation_requirement = request.form.get('simulation_requirement', '')
+        project_name = request.form.get('project_name', 'Unnamed Project')
+        additional_context = request.form.get('additional_context', '')
+
+        if not simulation_requirement:
+            return jsonify({
+                "success": False,
+                "error": t('api.requireSimulationRequirement')
+            }), 400
+
+        uploaded_files = request.files.getlist('files')
+        if not uploaded_files or all(not f.filename for f in uploaded_files):
+            return jsonify({
+                "success": False,
+                "error": t('api.requireFileUpload')
+            }), 400
+
+        project = ProjectManager.create_project(name=project_name)
+        project.simulation_requirement = simulation_requirement
+        logger.info(f"创建项目(异步本体): {project.project_id}")
+
+        document_texts = []
+        all_text = ""
+
+        for file in uploaded_files:
+            if file and file.filename and allowed_file(file.filename):
+                file_info = ProjectManager.save_file_to_project(
+                    project.project_id,
+                    file,
+                    file.filename
+                )
+                project.files.append({
+                    "filename": file_info["original_filename"],
+                    "size": file_info["size"]
+                })
+                text = FileParser.extract_text(file_info["path"])
+                text = TextProcessor.preprocess_text(text)
+                document_texts.append(text)
+                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
+
+        if not document_texts:
+            ProjectManager.delete_project(project.project_id)
+            return jsonify({
+                "success": False,
+                "error": t('api.noDocProcessed')
+            }), 400
+
+        project.total_text_length = len(all_text)
+        ProjectManager.save_extracted_text(project.project_id, all_text)
+        logger.info(f"文本提取完成，共 {len(all_text)} 字符")
+
+        task_manager = TaskManager()
+        task_id = task_manager.create_task(
+            f"生成本体定义: {project_name}",
+            metadata={"project_id": project.project_id}
+        )
+        current_locale = get_locale()
+
+        def ontology_task():
+            set_locale(current_locale)
+            try:
+                task_manager.update_task(
+                    task_id,
+                    status=TaskStatus.PROCESSING,
+                    progress=10,
+                    message="正在调用大模型生成本体定义..."
+                )
+                generator = OntologyGenerator()
+                ontology = generator.generate(
+                    document_texts=document_texts,
+                    simulation_requirement=simulation_requirement,
+                    additional_context=additional_context if additional_context else None
+                )
+                project.ontology = {
+                    "entity_types": ontology.get("entity_types", []),
+                    "edge_types": ontology.get("edge_types", [])
+                }
+                project.analysis_summary = ontology.get("analysis_summary", "")
+                project.status = ProjectStatus.ONTOLOGY_GENERATED
+                ProjectManager.save_project(project)
+                logger.info(
+                    f"[{task_id}] 本体生成完成: "
+                    f"{len(project.ontology['entity_types'])} 个实体类型, "
+                    f"{len(project.ontology['edge_types'])} 个关系类型"
+                )
+                task_manager.update_task(
+                    task_id,
+                    status=TaskStatus.COMPLETED,
+                    progress=100,
+                    message="本体生成完成",
+                    result={
+                        "project_id": project.project_id,
+                        "project_name": project.name,
+                        "ontology": project.ontology,
+                        "analysis_summary": project.analysis_summary,
+                        "files": project.files,
+                        "total_text_length": project.total_text_length
+                    }
+                )
+            except Exception as error:
+                provider_status = getattr(error, "status_code", None)
+                message = f"本体生成失败: {error}"
+                if isinstance(provider_status, int):
+                    message = f"本体生成失败: LLM provider HTTP {provider_status}"
+                logger.exception(f"[{task_id}] {message}")
+                task_manager.update_task(
+                    task_id,
+                    status=TaskStatus.FAILED,
+                    message=message,
+                    error=message
+                )
+
+        threading.Thread(target=ontology_task, daemon=True).start()
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "project_id": project.project_id,
+                "task_id": task_id,
+                "files": project.files,
+                "total_text_length": project.total_text_length
+            }
+        })
+
+    except Exception as error:
+        logger.exception("异步本体生成启动失败")
+        return jsonify({
+            "success": False,
+            "error": f"启动异步本体生成失败: {error}"
+        }), 500
