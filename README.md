@@ -24,6 +24,8 @@
 
 </div>
 
+> **About this repository**: this is a **locally-modified build** of [666ghj/MiroFish](https://github.com/666ghj/MiroFish) with a built-in local Zep backend (`ZEP_BACKEND=local`). It runs the full graph build / retrieval pipeline without a Zep Cloud account or API key. See the "Local Zep Backend" section below.
+
 ## ⚡ Overview
 
 **MiroFish** is a next-generation AI prediction engine powered by multi-agent technology. By extracting seed information from the real world (such as breaking news, policy drafts, or financial signals), it automatically constructs a high-fidelity parallel digital world. Within this space, thousands of intelligent agents with independent personalities, long-term memory, and behavioral logic freely interact and undergo social evolution. You can inject variables dynamically from a "God's-eye view" to precisely deduce future trajectories — **rehearse the future in a digital sandbox, and win decisions after countless simulations**.
@@ -122,9 +124,14 @@ LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL_NAME=qwen-plus
 
-# Zep Cloud Configuration
-# Free monthly quota is sufficient for simple usage: https://app.getzep.com/
+# Zep configuration (choose one)
+# Option A: Zep Cloud (upstream default) — free monthly quota is sufficient for simple usage: https://app.getzep.com/
+ZEP_BACKEND=cloud
 ZEP_API_KEY=your_zep_api_key
+
+# Option B: built-in local Zep backend (added by this repository, no Zep account or key required — see "Local Zep Backend" below)
+# ZEP_BACKEND=local
+# ZEP_LOCAL_DB_PATH=./backend/uploads/local_zep/zep_local.db   # optional, defaults to backend/uploads/local_zep/
 ```
 
 #### 2. Install Dependencies
@@ -175,6 +182,43 @@ docker compose up -d
 Reads `.env` from root directory by default, maps ports `3000 (frontend) / 5001 (backend)`
 
 > Mirror address for faster pulling is provided as comments in `docker-compose.yml`, replace if needed.
+
+## 🧩 Local Zep Backend
+
+Upstream MiroFish keeps graphs, entities and memory entirely on Zep Cloud, so a `ZEP_API_KEY` is mandatory. This repository ships a **local Zep backend** that replaces the cloud implementation while keeping the same client surface (`client.graph.*` / `client.batch.*`, `with_raw_response` pagination, `NotFoundError`, and so on), so no application code has to change.
+
+**Highlights**
+
+- Zero Zep dependency: no Zep account and no `ZEP_API_KEY`
+- Data lives in local SQLite: `backend/uploads/local_zep/zep_local.db` (graph / node / edge / episode / batch / batch_item, WAL mode)
+- Extraction reuses your own LLM via `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_NAME` (any OpenAI-compatible provider works)
+- Retrieval uses character-level TF-IDF (works for Chinese and English), so no extra vector store or embedding service is needed
+- Batch ingestion runs in a background thread pool, and `batch.get()` keeps the same status/progress semantics as Zep Cloud
+
+**Usage**
+
+```env
+ZEP_BACKEND=local
+LLM_API_KEY=your_api_key
+LLM_BASE_URL=https://your-endpoint/v1
+LLM_MODEL_NAME=your_model
+```
+
+```bash
+npm run dev   # same start command as upstream
+```
+
+**Self-check scripts**
+
+```bash
+# Exercise the local backend directly: graph -> extraction -> pagination -> search -> batch -> delete
+python backend/scripts/local_zep_smoke.py
+
+# End-to-end over the real HTTP API: ontology -> graph build -> node/edge assertions
+python backend/scripts/e2e_graph_build.py
+```
+
+**Note**: `ZEP_BACKEND` defaults to `cloud`, so behaviour stays identical to upstream when it is not set. Neither mode uses `ZEP_API_URL` (an external self-hosted Zep service).
 
 ## 📬 Join the Conversation
 

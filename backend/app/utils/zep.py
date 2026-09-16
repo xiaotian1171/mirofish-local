@@ -12,6 +12,7 @@ from zep_cloud.client import Zep
 from zep_cloud.core.api_error import ApiError as ZepApiError
 
 from ..config import Config
+from .local_zep import clear_local_zep_client, get_local_zep_client
 from .logger import get_logger
 
 logger = get_logger("mirofish.zep")
@@ -63,7 +64,10 @@ def _cached_zep_client(api_key: str, timeout: float) -> Zep:
 
 
 def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> Zep:
-    """Return a process-shared, explicitly configured Zep Cloud client."""
+    """Return a process-shared client for the configured Zep backend."""
+
+    if Config.ZEP_BACKEND == "local":
+        return get_local_zep_client()
 
     # zep-cloud gives ZEP_API_URL precedence even when base_url is explicit.
     # Reject it so this Cloud-only integration cannot silently target a
@@ -87,6 +91,7 @@ def clear_zep_client_cache() -> None:
     """Clear cached clients. Intended for tests and controlled reconfiguration."""
 
     _cached_zep_client.cache_clear()
+    clear_local_zep_client()
 
 
 def is_retryable_zep_error(error: BaseException) -> bool:

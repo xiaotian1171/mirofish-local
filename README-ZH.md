@@ -24,6 +24,8 @@
 
 </div>
 
+> **本仓库说明**：这里是 [666ghj/MiroFish](https://github.com/666ghj/MiroFish) 的**本地化改造版**，新增内置本地 Zep 后端（`ZEP_BACKEND=local`），无需 Zep Cloud 账号与 API Key 即可完整跑通图谱构建与检索。改造细节见下文「本地 Zep 后端」章节。
+
 ## ⚡ 项目概述
 
 **MiroFish** 是一款基于多智能体技术的新一代 AI 预测引擎。通过提取现实世界的种子信息（如突发新闻、政策草案、金融信号），自动构建出高保真的平行数字世界。在此空间内，成千上万个具备独立人格、长期记忆与行为逻辑的智能体进行自由交互与社会演化。你可透过「上帝视角」动态注入变量，精准推演未来走向——**让未来在数字沙盘中预演，助决策在百战模拟后胜出**。
@@ -122,9 +124,14 @@ LLM_API_KEY=your_api_key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL_NAME=qwen-plus
 
-# Zep Cloud 配置
-# 每月免费额度即可支撑简单使用：https://app.getzep.com/
+# Zep 配置（二选一）
+# 方式 A：Zep Cloud（原版默认）—— 每月免费额度即可支撑简单使用：https://app.getzep.com/
+ZEP_BACKEND=cloud
 ZEP_API_KEY=your_zep_api_key
+
+# 方式 B：内置本地 Zep 后端（本仓库新增，无需 Zep 账号与密钥，详见下方「本地 Zep 后端」）
+# ZEP_BACKEND=local
+# ZEP_LOCAL_DB_PATH=./backend/uploads/local_zep/zep_local.db   # 可选，默认即在该目录
 ```
 
 #### 2. 安装依赖
@@ -175,6 +182,43 @@ docker compose up -d
 默认会读取根目录下的 `.env`，并映射端口 `3000（前端）/5001（后端）`
 
 > 在 `docker-compose.yml` 中已通过注释提供加速镜像地址，可按需替换
+
+## 🧩 本地 Zep 后端
+
+原版 MiroFish 的图谱、实体与记忆全部托管在 Zep Cloud，必须申请 `ZEP_API_KEY` 才能使用。本仓库内置了一个**本地 Zep 后端**：沿用同一套客户端接口（`client.graph.*` / `client.batch.*`、`with_raw_response` 分页、`NotFoundError` 等）替换云端实现，因此上层业务代码无需任何改动。
+
+**特点**
+
+- 零 Zep 依赖：不需要 Zep 账号、不需要 `ZEP_API_KEY`
+- 数据落在本地 SQLite：`backend/uploads/local_zep/zep_local.db`（graph / node / edge / episode / batch / batch_item 六张表，WAL 模式）
+- 抽取复用你自己的 LLM：沿用 `.env` 中的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL_NAME`（任意 OpenAI 兼容渠道均可）
+- 检索使用字符级 TF-IDF（中英文均可），不需要额外的向量库或 embedding 服务
+- 批量摄取在后台线程池执行，`batch.get()` 的状态与进度语义与 Zep Cloud 保持一致
+
+**用法**
+
+```env
+ZEP_BACKEND=local
+LLM_API_KEY=your_api_key
+LLM_BASE_URL=https://your-endpoint/v1
+LLM_MODEL_NAME=your_model
+```
+
+```bash
+npm run dev   # 启动方式与原本一致
+```
+
+**自检脚本**
+
+```bash
+# 直接测本地后端：建图 → 抽取 → 分页 → 检索 → 批量 → 删除
+python backend/scripts/local_zep_smoke.py
+
+# 走真实 HTTP 接口的端到端测试：生成本体 → 建图谱 → 校验节点/边
+python backend/scripts/e2e_graph_build.py
+```
+
+**说明**：`ZEP_BACKEND` 默认值为 `cloud`，不配置时行为与上游完全一致；无论哪种模式都不使用 `ZEP_API_URL`（外部自建 Zep 服务地址）。
 
 ## 📬 更多交流
 
