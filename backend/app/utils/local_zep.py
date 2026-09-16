@@ -41,7 +41,7 @@ class NotFoundError(_CloudNotFoundError):  # type: ignore[misc,valid-type]
 
 _NEXT_CURSOR_HEADER = "zep-next-cursor"
 _MAX_EXTRACT_CHARS = 8000
-_EXTRACT_MAX_TOKENS = 4096
+_EXTRACT_MAX_TOKENS = 8192
 _EXTRACT_WORKERS = 3
 _EXTRACT_MAX_ATTEMPTS = 3
 _EXTRACT_RETRY_DELAY_SECONDS = 3.0
